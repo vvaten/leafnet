@@ -88,7 +88,7 @@ def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff
     if sample_loader_debug: print(f"loaded {len(area_ids)} samples")
     return sample_array[area_ids], label_array[area_ids]
 
-def load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir=None, args_duplicate_undenoise=False, args_duplicate_invert=False, args_duplicate_mirror=False, args_duplicate_rotate=False, resize_ratio = 1.0, stoma_weight = 1):
+def load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir=None, args_duplicate_undenoise=False, args_duplicate_invert=False, args_duplicate_mirror=False, args_duplicate_rotate=False, resize_ratio = 1.0, stoma_weight = 1, gaussian_blur = 4):
 
     if args_duplicate_undenoise:
         duplicate_undenoise = [True, False]
@@ -142,7 +142,10 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
         label_PIL_image = label_PIL_image.resize(image_resize_target, Image.ANTIALIAS)
 
         input_image = np.array(sample_PIL_image)
-        input_label = np.array(label_PIL_image.filter(GaussianBlur(4)))[:,:,2]
+        if gaussian_blur > 0:
+            input_label = np.array(label_PIL_image.filter(GaussianBlur(gaussian_blur)))[:,:,2]
+        else:
+            input_label = np.array(label_PIL_image)[:,:,2]
 
         img_count_sum += 1
         current_image_validation = False

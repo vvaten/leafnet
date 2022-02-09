@@ -25,6 +25,7 @@ arg_parser.add_argument("--duplicate_mirror", dest="duplicate_mirror", action="s
 arg_parser.add_argument("--duplicate_rotate", dest="duplicate_rotate", action="store_true", help="Duplicate samples(*4) by rotating samples 90, 180, 270 degree.")
 
 arg_parser.add_argument("--stoma_weight", dest="stoma_weight", type=int, default=1, help="Image areas containing stomata will be mulitplied by this factor.(default value: 1)")
+arg_parser.add_argument("--gaussian_blur", dest="gaussian_blur", type=int, default=4, help="Factor for Gaussian blur. (default: 4)")
 
 ## Parse Args
 args = arg_parser.parse_args()
@@ -120,11 +121,13 @@ image_denoiser = denoiser()
 
 print("Loading samples...", end="")
 sys.stdout.flush()
-input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, target_res/sample_res, stoma_weight)
+input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, target_res/sample_res, stoma_weight, gaussian_blur)
 print("Done!")
 
 print("Collected "+str(img_count_sum)+" sample images("+str(img_count_sum-validation_count_sum)+" for training, "+str(validation_count_sum)+" for validation) and "+str(foreign_count_sum)+" foreign negative images.")
 print("Input images are duplicated by *" + str(duplicate_times))
+
+save_preprocessed_image_samples(input_training_samples, input_training_labels, folder)
 
 training_sample_array = np.concatenate(input_training_samples, axis=0)
 del input_training_samples

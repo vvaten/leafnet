@@ -2,18 +2,30 @@ import math
 import numpy as np
 import cv2
 import os
+import sys
 from PIL import Image
 from PIL.ImageFilter import GaussianBlur
 
+sample_loader_debug = False
+
 def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff, stoma_weight):
+    if sample_loader_debug: print(f"sample_loader(source_size={source_size}, target_size={target_size}, border_cutoff={border_cutoff}, stoma_weight={stoma_weight}")
+
     # Get the shape of samples
     img_r_size, img_c_size = sample_img.shape
+    if sample_loader_debug: print(f"sample_img.shape: {sample_img.shape}")
     r_max_step = math.floor((img_r_size-(border_cutoff*2))/target_size)
     c_max_step = math.floor((img_c_size-(border_cutoff*2))/target_size)
 
+    if sample_loader_debug: print(f"r_max_step: {r_max_step}, c_max_step: {c_max_step}")
+
     network_border = (source_size-target_size)//2
 
+    if sample_loader_debug: print(f"network_border: {network_border}")
+
     img_left_up_pad = network_border - border_cutoff
+
+    if sample_loader_debug: print(f"img_left_up_pad: {img_left_up_pad}")
 
     # Cut/Pad Left and Top
     label_img = label_img[border_cutoff:,border_cutoff:].astype(np.uint8)
@@ -26,20 +38,29 @@ def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff
 
     # Cut/Pad Right and Bottom
     img_r_size, img_c_size = sample_img.shape
+    if sample_loader_debug: print(f"After cut/pad left/top sample_img.shape: {sample_img.shape}")
     label_img = label_img[:target_size*(r_max_step),:target_size*(c_max_step)].astype(np.uint8)
 
     sample_target_r_len = target_size*(r_max_step) + source_size - target_size
+
+    if sample_loader_debug: print(f"sample_target_r_len: {sample_target_r_len}")
+
     if sample_target_r_len > img_r_size:
         sample_img = cv2.copyMakeBorder(sample_img, 0,sample_target_r_len - img_r_size,0,0,cv2.BORDER_REFLECT)
     elif sample_target_r_len < img_r_size:
         sample_img = sample_img[:sample_target_r_len,:]
     
     sample_target_c_len = target_size*(c_max_step) + source_size - target_size
+
+    if sample_loader_debug: print(f"sample_target_c_len: {sample_target_c_len}")
+
     if sample_target_c_len > img_c_size:
         sample_img = cv2.copyMakeBorder(sample_img, 0,0,0,sample_target_c_len - img_c_size,cv2.BORDER_REFLECT)
     elif sample_target_c_len < img_c_size:
         sample_img = sample_img[:,:sample_target_c_len]
-    
+
+    if sample_loader_debug: print(f"After cut/pad right/bottom sample_img.shape: {sample_img.shape}")
+
     # Normalize
     sample_img_norm = sample_img.astype(float) / 255
     label_img_norm = label_img.astype(float) / 255
@@ -60,8 +81,11 @@ def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff
                 multiply_area_list.append(block_id)
     label_array[:,:,:,1] = 1-label_array[:,:,:,0]
     area_ids = list(range(r_max_step*c_max_step))
+
     for i in range(stoma_weight-1):
         area_ids.extend(multiply_area_list)
+
+    if sample_loader_debug: print(f"loaded {len(area_ids)} samples")
     return sample_array[area_ids], label_array[area_ids]
 
 def load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir=None, args_duplicate_undenoise=False, args_duplicate_invert=False, args_duplicate_mirror=False, args_duplicate_rotate=False, resize_ratio = 1.0, stoma_weight = 1):
@@ -95,6 +119,12 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
     input_validation_samples = list()
     input_validation_labels = list()
     for image_name in os.listdir(image_dir):
+        if sample_loader_debug:
+            print(f"image_name: {image_name}")
+        else:
+            print(f".", end="")
+            sys.stdout.flush()
+
         try: Image.open(os.path.join(image_dir, image_name)).close()
         except: continue
         image_path = os.path.join(image_dir, image_name)
@@ -145,6 +175,12 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
 
     if foreign_neg_dir:
         for image_name in os.listdir(foreign_neg_dir):
+            if sample_loader_debug:
+                print(f"image_name: {image_name}")
+            else:
+                print(f".", end="")
+                sys.stdout.flush()
+
             try: Image.open(os.path.join(foreign_neg_dir, image_name)).close()
             except: continue
             image_path = os.path.join(foreign_neg_dir, image_name)

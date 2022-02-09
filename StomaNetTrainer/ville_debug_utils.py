@@ -1,5 +1,7 @@
+import os
 from PIL import Image
 from tensorflow.keras import backend
+import numpy as np
 
 def np_mem(x):
 	return f"Array size: {x.size}, Item size: {x.itemsize}, Bytes: {x.size*x.itemsize}"

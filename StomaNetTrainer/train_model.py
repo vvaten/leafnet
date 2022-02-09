@@ -72,6 +72,8 @@ stoma_weight = args.stoma_weight
 if stoma_weight < 1:
     raise ValueError("Stoma weight must be an intenger above zero.")
 
+gaussian_blur = args.gaussian_blur
+
 #Ignore tensorflow import warnings
 # import warnings
 # warnings.filterwarnings("ignore")
@@ -121,13 +123,13 @@ image_denoiser = denoiser()
 
 print("Loading samples...", end="")
 sys.stdout.flush()
-input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, target_res/sample_res, stoma_weight, gaussian_blur)
+input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, target_res/sample_res, stoma_weight, args.gaussian_blur)
 print("Done!")
 
 print("Collected "+str(img_count_sum)+" sample images("+str(img_count_sum-validation_count_sum)+" for training, "+str(validation_count_sum)+" for validation) and "+str(foreign_count_sum)+" foreign negative images.")
 print("Input images are duplicated by *" + str(duplicate_times))
 
-save_preprocessed_image_samples(input_training_samples, input_training_labels, folder)
+save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_gaussian_blur_0")
 
 training_sample_array = np.concatenate(input_training_samples, axis=0)
 del input_training_samples
@@ -147,8 +149,10 @@ val_data = (validation_sample_array, validation_label_array)
 
 optm = None
 if args.optimizer=="SGD":
+    print("Using SGD optimizer")
     optm = optimizers.SGD(lr=0.001, momentum=0.9, nesterov = True)
 elif args.optimizer=="Nadam":
+    print("Using Nadam optimizer")
     optm = optimizers.Nadam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-07)
 else:
     raise ValueError("Unknown optimizer, allowed values are SGD and Nadam")

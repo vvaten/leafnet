@@ -14,6 +14,8 @@ arg_parser.add_argument("-f", dest="foreign_neg_dir", type=str, help="(optional)
 arg_parser.add_argument("-m", dest="stoma_net_model_path", type=str, help="The source model for transfer training (must be another model based on StomaNet).")
 
 arg_parser.add_argument("--gpu_count", dest="multi_gpu", type=int, default=1, help="Tensorflow multi_gpu_model argument, use 1 for cpu or one gpu.(default value: 1)")
+arg_parser.add_argument("--optimizer", dest="optimizer", type=str, default="SGD", help="Optimizer: SGD (with Nesterov momentum) or Nadam")
+arg_parser.add_argument("--loss_function", dest="loss_function", type=str, default="kld", help="Loss function: kld or binary_crossentropy")
 arg_parser.add_argument("--batch_size", dest="batch_size", type=int, default=40, help="Batch size of training.(default value: 40)")
 arg_parser.add_argument("--validation_split", dest="validation_split", type=float, default=0.2, help="Images will be split into training and validation with this ratio BEFORE sample duplication.(default value: 0.2)")
 arg_parser.add_argument("--dynamic_batch_size", dest="dynamic_batch_size", action="store_true", help="Seperate epochs to 5 training period with increasing batch sizes.")
@@ -140,8 +142,13 @@ print(f"Mem validation_label_array: {np_mem(validation_label_array)}, shape: {va
 
 val_data = (validation_sample_array, validation_label_array)
 
-optm=optimizers.SGD(lr=0.001, momentum=0.9, nesterov = True)
-#optm=optimizers.Nadam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-07)
+optm = None
+if args.optimizer=="SGD":
+    optm = optimizers.SGD(lr=0.001, momentum=0.9, nesterov = True)
+elif args.optimizer=="Nadam":
+    optm = optimizers.Nadam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-07)
+else:
+    raise ValueError("Unknown optimizer, allowed values are SGD and Nadam")
 
 
 exec_model = None
@@ -149,8 +156,8 @@ if multi_gpu > 1:
     exec_model = multi_gpu_model(training_model, gpus=multi_gpu)
 else:
     exec_model = training_model
-exec_model.compile(loss='kld', optimizer=optm, metrics=['accuracy'])
-#exec_model.compile(loss='binary_crossentropy', optimizer=optm, metrics=['accuracy'])
+
+exec_model.compile(loss=args.loss_function, optimizer=optm, metrics=['accuracy'])
 
 if dynamic_batch_size:
     # Get Epochs

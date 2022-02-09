@@ -75,6 +75,7 @@ if stoma_weight < 1:
 
 import numpy as np
 import os
+import sys
 import random
 
 import tensorflow as tf
@@ -87,29 +88,38 @@ from stoma_net_models import build_stoma_net_model
 
 from tensorflow.keras.utils import multi_gpu_model
 
+from ville_debug_utils import *
+
 np.random.seed(0)
 random.seed(0)
-tf.set_random_seed(0)
-sess = tf.Session(graph=tf.get_default_graph())
-backend.set_session(sess)
+tf.compat.v1.set_random_seed(0)
+sess = tf.compat.v1.Session(graph=tf.compat.v1.get_default_graph())
+tf.compat.v1.keras.backend.set_session(sess)
 
 # Compile model
-print("Compiling model...")
+print("Compiling model...", end="")
+sys.stdout.flush()
 training_model = build_stoma_net_model(small_model=True, sigmoid_before_output=True)
 source_size = int(training_model.input.shape[1])
 target_size = int(training_model.output.shape[1])
+print("Done!")
 
 # Load Weight if used
 if stoma_net_model_path:
-    print("Loading weights...")
+    print("Loading weights...", end="")
+    sys.stdout.flush()
     # Not using load_weights to avoid tensorflow model issue 2676
     reference_model = load_model(stoma_net_model_path)
     training_model.set_weights(reference_model.get_weights())
+    print("Done!")
 
 # Load Samples
 image_denoiser = denoiser()
 
+print("Loading samples...", end="")
+sys.stdout.flush()
 input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, target_res/sample_res, stoma_weight)
+print("Done!")
 
 print("Collected "+str(img_count_sum)+" sample images("+str(img_count_sum-validation_count_sum)+" for training, "+str(validation_count_sum)+" for validation) and "+str(foreign_count_sum)+" foreign negative images.")
 print("Input images are duplicated by *" + str(duplicate_times))
@@ -123,10 +133,16 @@ del input_validation_samples
 validation_label_array = np.concatenate(input_validation_labels, axis=0)
 del input_validation_labels
 
+print(f"Mem training_sample_array: {np_mem(training_sample_array)}, shape: {training_sample_array.shape}")
+print(f"Mem training_label_array: {np_mem(training_label_array)}, shape: {training_label_array.shape}")
+print(f"Mem validation_sample_array: {np_mem(validation_sample_array)}, shape: {validation_sample_array.shape}")
+print(f"Mem validation_label_array: {np_mem(validation_label_array)}, shape: {validation_label_array.shape}")
+
 val_data = (validation_sample_array, validation_label_array)
 
 optm=optimizers.SGD(lr=0.001, momentum=0.9, nesterov = True)
-# optm = optimizers.Nadam()
+#optm=optimizers.Nadam(learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-07)
+
 
 exec_model = None
 if multi_gpu > 1:
@@ -134,6 +150,7 @@ if multi_gpu > 1:
 else:
     exec_model = training_model
 exec_model.compile(loss='kld', optimizer=optm, metrics=['accuracy'])
+#exec_model.compile(loss='binary_crossentropy', optimizer=optm, metrics=['accuracy'])
 
 if dynamic_batch_size:
     # Get Epochs
@@ -150,9 +167,12 @@ if dynamic_batch_size:
     batch_sizes.append(math.ceil(batch_size_increment*4))
     batch_sizes.append(math.ceil(batch_size_increment*5))
     # Train
+    print(f"Dynamic batch size: epoch_per_step={epoch_per_step}, batch_sizes={batch_sizes}")
     for i in range(5):
+        print(f"Dynamic batch size: {i}/5, epochs={epoch_per_step[i]}, batch_sizes={batch_sizes[i]}")
         exec_model.fit(training_sample_array, training_label_array, epochs = epoch_per_step[i], validation_data = val_data, batch_size=batch_sizes[i])
 else:
+    printf("Static batch size: {final_batch_size}")
     exec_model.fit(training_sample_array, training_label_array, epochs = total_epoch, validation_data = val_data, batch_size=final_batch_size)
 
 saving_model = build_stoma_net_model(small_model=False, sigmoid_before_output=False)

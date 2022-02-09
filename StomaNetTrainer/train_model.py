@@ -157,7 +157,7 @@ if multi_gpu > 1:
 else:
     exec_model = training_model
 
-exec_model.compile(loss=args.loss_function, optimizer=optm, metrics=['accuracy'])
+exec_model.compile(loss=args.loss_function, optimizer=optm, metrics=['accuracy', dice_coeff])
 
 if dynamic_batch_size:
     # Get Epochs
@@ -186,3 +186,5 @@ saving_model = build_stoma_net_model(small_model=False, sigmoid_before_output=Fa
 saving_model.set_weights(training_model.get_weights())
 saving_model.save(save_path)
 with open(save_path[:-6]+".res", "w") as model_meta: model_meta.write(str(target_res))
+with open(save_path[:-6]+".args", "w") as args_file: args_file.write(str(vars(args)))
+

@@ -279,7 +279,7 @@ if train_mode:
             if prop not in history:
                 history[prop] = recorded_history.history[prop]
             else:
-                history[prop].append(recorded_history.history[prop])
+                history[prop].extend(recorded_history.history[prop])
     with open(save_path[:-6]+".training_history.json", "w") as history_file: history_file.write(str(history))
     print(f"Wrote .training_history.json: {str(history)}")
 

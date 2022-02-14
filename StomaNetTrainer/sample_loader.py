@@ -118,7 +118,10 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
     input_training_labels = list()
     input_validation_samples = list()
     input_validation_labels = list()
-    for image_name in os.listdir(image_dir):
+
+    all_image_names = sorted(os.listdir(image_dir))
+
+    for image_name in all_image_names:
         if sample_loader_debug:
             print(f"image_name: {image_name}")
         else:
@@ -152,6 +155,11 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
         if img_count_sum * validation_split > validation_count_sum:
             validation_count_sum += 1
             current_image_validation = True
+            if len(all_image_names) < 10:
+                print(f"Using {image_name} for validation")
+        else:
+            if len(all_image_names) < 10:
+                print(f"Using {image_name} for training")
 
         for undenoise_ops in duplicate_undenoise:
             if not undenoise_ops:

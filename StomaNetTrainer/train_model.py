@@ -39,6 +39,7 @@ arg_parser_train.add_argument("--duplicate_undenoise", dest="duplicate_undenoise
 arg_parser_train.add_argument("--duplicate_invert", dest="duplicate_invert", action="store_true", help="Duplicate samples(*2) by using inverting images.")
 arg_parser_train.add_argument("--duplicate_mirror", dest="duplicate_mirror", action="store_true", help="Duplicate samples(*2) by using mirrored images.")
 arg_parser_train.add_argument("--duplicate_rotate", dest="duplicate_rotate", action="store_true", help="Duplicate samples(*4) by rotating samples 90, 180, 270 degree.")
+arg_parser_train.add_argument("--predict_per_epoch", dest="predict_per_epoch", action="store_true", help="Record training progress by predicting with validation data after each epoch")
 
 arg_parser_train.add_argument("--stoma_weight", dest="stoma_weight", type=int, default=1, help="Image areas containing stomata will be mulitplied by this factor.(default value: 1)")
 arg_parser_train.add_argument("--gaussian_blur", dest="gaussian_blur", type=int, default=4, help="Factor for Gaussian blur. (default: 4)")
@@ -205,8 +206,10 @@ if train_mode:
     else:
         exec_model = training_model
 
-    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff])
+    training_preview_predictor_callback = PredictAfterEachTrainingEpoch(os.listdir(eval_image_dir)[0], training_model.input.shape, training_model.output.shape, image_denoiser, target_res/sample_res)
+    callbacks = [training_preview_predictor_callback]
 
+    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff], callbacks=callbacks)
 
     print("Loading samples...", end="")
     sys.stdout.flush()
@@ -216,7 +219,7 @@ if train_mode:
     print("Collected "+str(img_count_sum)+" sample images("+str(img_count_sum-validation_count_sum)+" for training, "+str(validation_count_sum)+" for validation) and "+str(foreign_count_sum)+" foreign negative images.")
     print("Input images are duplicated by *" + str(duplicate_times))
 
-    ###save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_gaussian_blur_0")
+    save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_helsinki_input_data_sample")
 
     training_sample_array = np.concatenate(input_training_samples, axis=0)
     del input_training_samples

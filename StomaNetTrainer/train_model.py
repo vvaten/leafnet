@@ -39,7 +39,7 @@ arg_parser_train.add_argument("--duplicate_undenoise", dest="duplicate_undenoise
 arg_parser_train.add_argument("--duplicate_invert", dest="duplicate_invert", action="store_true", help="Duplicate samples(*2) by using inverting images.")
 arg_parser_train.add_argument("--duplicate_mirror", dest="duplicate_mirror", action="store_true", help="Duplicate samples(*2) by using mirrored images.")
 arg_parser_train.add_argument("--duplicate_rotate", dest="duplicate_rotate", action="store_true", help="Duplicate samples(*4) by rotating samples 90, 180, 270 degree.")
-arg_parser_train.add_argument("--predict_per_epoch", dest="predict_per_epoch", action="store_true", help="Record training progress by predicting with validation data after each epoch")
+arg_parser_train.add_argument("--predict_preview", dest="predict_preview", action="store_true", help="Record training progress by predicting with validation data after each epoch")
 
 arg_parser_train.add_argument("--stoma_weight", dest="stoma_weight", type=int, default=1, help="Image areas containing stomata will be mulitplied by this factor.(default value: 1)")
 arg_parser_train.add_argument("--gaussian_blur", dest="gaussian_blur", type=int, default=4, help="Factor for Gaussian blur. (default: 4)")
@@ -56,6 +56,7 @@ arg_parser_eval.add_argument("--batch_size", dest="batch_size", type=int, defaul
 arg_parser_eval.add_argument("--gpu_count", dest="multi_gpu", type=int, default=1, help="Tensorflow multi_gpu_model argument, use 1 for cpu or one gpu.(default value: 1)")
 arg_parser_eval.add_argument("--stoma_weight", dest="stoma_weight", type=int, default=1, help="Image areas containing stomata will be mulitplied by this factor.(default value: 1)")
 arg_parser_eval.add_argument("--gaussian_blur", dest="gaussian_blur", type=int, default=4, help="Factor for Gaussian blur. (default: 4)")
+arg_parser_eval.add_argument("--predict_preview", dest="predict_preview", action="store_true", help="Record raw prediction with the model with the first evaluation image")
 arg_parser_eval.set_defaults(set_train_or_eval_mode=set_eval_mode)
 
 
@@ -105,6 +106,8 @@ if train_mode:
     multi_gpu = max(1, args.multi_gpu)
     loss_function = args.loss_function
     
+    predict_preview = args.predict_preview
+
     optm = None
     if args.optimizer=="SGD":
         print("Using SGD optimizer")
@@ -158,6 +161,7 @@ if eval_mode:
             raise ValueError("Stoma weight must be an intenger above zero.")
         gaussian_blur = args.gaussian_blur
         final_batch_size = args.batch_size
+        predict_preview = args.predict_preview
 
 
 print(f"Args:\n{str(vars(args))}")
@@ -206,10 +210,13 @@ if train_mode:
     else:
         exec_model = training_model
 
-    training_preview_predictor_callback = PredictAfterEachTrainingEpoch(os.listdir(eval_image_dir)[0], training_model.input.shape, training_model.output.shape, image_denoiser, target_res/sample_res)
-    callbacks = [training_preview_predictor_callback]
+    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff])
 
-    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff], callbacks=callbacks)
+    callbacks = []
+
+    if predict_preview:
+        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, os.path.join(eval_image_dir, os.listdir(eval_image_dir)[0]), source_size, target_size, image_denoiser, target_res/sample_res)
+        callbacks.append(training_preview_predictor_callback)
 
     print("Loading samples...", end="")
     sys.stdout.flush()
@@ -219,7 +226,7 @@ if train_mode:
     print("Collected "+str(img_count_sum)+" sample images("+str(img_count_sum-validation_count_sum)+" for training, "+str(validation_count_sum)+" for validation) and "+str(foreign_count_sum)+" foreign negative images.")
     print("Input images are duplicated by *" + str(duplicate_times))
 
-    save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_helsinki_input_data_sample")
+    ###save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_helsinki_input_data_sample")
 
     training_sample_array = np.concatenate(input_training_samples, axis=0)
     del input_training_samples
@@ -259,11 +266,11 @@ if train_mode:
         print(f"Dynamic batch size: epoch_per_step={epoch_per_step}, batch_sizes={batch_sizes}")
         for i in range(5):
             print(f"Dynamic batch size: {i}/5, epochs={epoch_per_step[i]}, batch_sizes={batch_sizes[i]}")
-            history = exec_model.fit(training_sample_array, training_label_array, epochs = epoch_per_step[i], validation_data = val_data, batch_size=batch_sizes[i])
+            history = exec_model.fit(training_sample_array, training_label_array, epochs = epoch_per_step[i], validation_data = val_data, batch_size=batch_sizes[i], callbacks=callbacks)
             histories.append(history)
     else:
         print(f"Static batch size: {final_batch_size}")
-        history = exec_model.fit(training_sample_array, training_label_array, epochs = total_epoch, validation_data = val_data, batch_size=final_batch_size)
+        history = exec_model.fit(training_sample_array, training_label_array, epochs = total_epoch, validation_data = val_data, batch_size=final_batch_size, callbacks=callbacks)
         histories.append(history)
         
     print(f"Training complete. Saving model to {save_path}")
@@ -344,6 +351,10 @@ if eval_mode:
     print(f"Mem evaluation_label_array: {np_mem(evaluation_label_array)}, shape: {evaluation_label_array.shape}")
 
     results = exec_model.evaluate(evaluation_sample_array, evaluation_label_array, batch_size=final_batch_size)
+
+    if predict_preview:
+        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, os.path.join(eval_image_dir, os.listdir(eval_image_dir)[0]), source_size, target_size, image_denoiser, target_res/sample_res)
+        training_preview_predictor_callback.on_epoch_end(-1)
 
     results_dict = dict(zip(['test_loss','test_acc','test_dice_coeff'],results))
     print(f"Results: {results_dict}")

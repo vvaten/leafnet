@@ -55,7 +55,11 @@ class PredictAfterEachTrainingEpoch(tf.compat.v1.keras.callbacks.Callback):
         if not os.path.exists(self.predict_preview_path):
             os.makedirs(self.predict_preview_path)
         self.background_type = True
-        self.predict_image, _ = load_image(predict_image_name, resize_ratio, self.background_type, preprocesser = image_denoiser.denoise)
+        if image_denoiser:
+            preprocessor = image_denoiser.denoise
+        else:
+            preprocessor = None
+        self.predict_image, _ = load_image(predict_image_name, resize_ratio, self.background_type, preprocesser = preprocessor)
         print(f"Predicting a preview after each epch with image {predict_image_name}")
         filename = f"{self.predict_preview_path}/predict_epoch__source.png"
         Image.fromarray(self.predict_image).convert('RGB').save(filename)

@@ -39,6 +39,8 @@ arg_parser_train.add_argument("--duplicate_undenoise", dest="duplicate_undenoise
 arg_parser_train.add_argument("--duplicate_invert", dest="duplicate_invert", action="store_true", help="Duplicate samples(*2) by using inverting images.")
 arg_parser_train.add_argument("--duplicate_mirror", dest="duplicate_mirror", action="store_true", help="Duplicate samples(*2) by using mirrored images.")
 arg_parser_train.add_argument("--duplicate_rotate", dest="duplicate_rotate", action="store_true", help="Duplicate samples(*4) by rotating samples 90, 180, 270 degree.")
+arg_parser_train.add_argument("--duplicate_rotate_stomata_only", dest="duplicate_rotate_stomata_only", type=int, default=0, help="Duplicate stomata samples by rotating them in n degrees steps")
+
 arg_parser_train.add_argument("--predict_preview", dest="predict_preview", action="store_true", help="Record training progress by predicting with validation data after each epoch")
 
 arg_parser_train.add_argument("--stoma_weight", dest="stoma_weight", type=int, default=1, help="Image areas containing stomata will be mulitplied by this factor.(default value: 1)")
@@ -130,12 +132,14 @@ if train_mode:
     args_duplicate_invert=args.duplicate_invert
     args_duplicate_mirror=args.duplicate_mirror
     args_duplicate_rotate=args.duplicate_rotate
-
+    args_duplicate_rotate_stomata_only = args.duplicate_rotate_stomata_only
+    
     duplicate_times = 1
     if args_duplicate_undenoise: duplicate_times *= 2
     if args_duplicate_invert: duplicate_times *= 2
     if args_duplicate_mirror: duplicate_times *= 2
     if args_duplicate_rotate: duplicate_times *= 4
+    if args_duplicate_rotate_stomata_only > 0: duplicate_times *= (90 // args_duplicate_rotate_stomata_only)
 
     stoma_weight = args.stoma_weight
     if stoma_weight < 1:
@@ -202,7 +206,7 @@ if train_mode:
         print("Done!")
 
     # Load Samples
-    image_denoiser = denoiser()
+    image_denoiser = None #denoiser()
 
     exec_model = None
     if multi_gpu > 1:
@@ -220,13 +224,13 @@ if train_mode:
 
     print("Loading samples...", end="")
     sys.stdout.flush()
-    input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, target_res/sample_res, stoma_weight, args.gaussian_blur)
+    input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, args_duplicate_rotate_stomata_only, target_res/sample_res, stoma_weight, args.gaussian_blur)
     print("Done!")
 
     print("Collected "+str(img_count_sum)+" sample images("+str(img_count_sum-validation_count_sum)+" for training, "+str(validation_count_sum)+" for validation) and "+str(foreign_count_sum)+" foreign negative images.")
     print("Input images are duplicated by *" + str(duplicate_times))
 
-    ###save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_helsinki_input_data_sample")
+    save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_stanford-dic_input_data_sample")
 
     training_sample_array = np.concatenate(input_training_samples, axis=0)
     del input_training_samples
@@ -339,7 +343,7 @@ if eval_mode:
 
     print("Loading evaluation samples...", end="")
     sys.stdout.flush()
-    input_training_samples, input_training_labels, _, _, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(eval_image_dir, eval_label_dir, source_size, target_size, 0, image_denoiser, None, False, False, False, False, target_res/sample_res, stoma_weight, args.gaussian_blur)
+    input_training_samples, input_training_labels, _, _, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(eval_image_dir, eval_label_dir, source_size, target_size, 0, image_denoiser, None, False, False, False, False, False, target_res/sample_res, stoma_weight, args.gaussian_blur)
     print("Done!")
 
     evaluation_sample_array = np.concatenate(input_training_samples, axis=0)

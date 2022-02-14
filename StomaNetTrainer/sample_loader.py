@@ -5,10 +5,11 @@ import os
 import sys
 from PIL import Image
 from PIL.ImageFilter import GaussianBlur
+from scipy.ndimage import rotate
 
 sample_loader_debug = False
 
-def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff, stoma_weight):
+def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff, stoma_weight, stomata_only):
     if sample_loader_debug: print(f"sample_loader(source_size={source_size}, target_size={target_size}, border_cutoff={border_cutoff}, stoma_weight={stoma_weight}")
 
     # Get the shape of samples
@@ -80,15 +81,19 @@ def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff
             if np.mean(label_array[block_id,:,:,0]) > 0.1:
                 multiply_area_list.append(block_id)
     label_array[:,:,:,1] = 1-label_array[:,:,:,0]
-    area_ids = list(range(r_max_step*c_max_step))
 
-    for i in range(stoma_weight-1):
-        area_ids.extend(multiply_area_list)
+    if stomata_only:
+        area_ids = multiply_area_list
+    else:
+        area_ids = list(range(r_max_step*c_max_step))
+
+        for i in range(stoma_weight-1):
+            area_ids.extend(multiply_area_list)
 
     if sample_loader_debug: print(f"loaded {len(area_ids)} samples")
     return sample_array[area_ids], label_array[area_ids]
 
-def load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir=None, args_duplicate_undenoise=False, args_duplicate_invert=False, args_duplicate_mirror=False, args_duplicate_rotate=False, resize_ratio = 1.0, stoma_weight = 1, gaussian_blur = 4):
+def load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir=None, args_duplicate_undenoise=False, args_duplicate_invert=False, args_duplicate_mirror=False, args_duplicate_rotate=False, args_duplicate_rotate_stomata_only=0, resize_ratio = 1.0, stoma_weight = 1, gaussian_blur = 4):
 
     if args_duplicate_undenoise:
         duplicate_undenoise = [True, False]
@@ -109,6 +114,11 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
         duplicate_rotate = [0, 1, 2, 3]
     else:
         duplicate_rotate = [0]
+
+    if args_duplicate_rotate_stomata_only > 0:
+        duplicate_rotate_stomata_only = range(0, 90, args_duplicate_rotate_stomata_only)
+    else:
+        duplicate_rotate_stomata_only = [0]
 
     # Load images
     img_count_sum = 0
@@ -163,7 +173,8 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
 
         for undenoise_ops in duplicate_undenoise:
             if not undenoise_ops:
-                input_image = image_denoiser.denoise(input_image)
+                if image_denoiser:
+                    input_image = image_denoiser.denoise(input_image)
             for invert_ops in duplicate_invert:
                 if invert_ops:
                     input_image = 255 - input_image
@@ -172,17 +183,22 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
                         input_image = input_image[:,::-1]
                         input_label = input_label[:,::-1]
                     for rotate_ops in duplicate_rotate:
-                        input_image = np.rot90(input_image,rotate_ops)
-                        input_label = np.rot90(input_label,rotate_ops)
+                        rot90_rotated_input_image = np.rot90(input_image,rotate_ops)
+                        rot90_rotated_input_label = np.rot90(input_label,rotate_ops)
+                        for small_rotate_ops in duplicate_rotate_stomata_only:
+                            if small_rotate_ops == 0:
+                                image_stack, label_stack = sample_loader(source_size, target_size, rot90_rotated_input_image, rot90_rotated_input_label, 50, stoma_weight, False)
+                            else:
+                                free_rotated_input_image = rotate(rot90_rotated_input_image, small_rotate_ops)
+                                free_rotated_input_label = rotate(rot90_rotated_input_label, small_rotate_ops)
+                                image_stack, label_stack = sample_loader(source_size, target_size, free_rotated_input_image, free_rotated_input_label, 50, stoma_weight, True)
 
-                        image_stack, label_stack = sample_loader(source_size, target_size, input_image, input_label, 50, stoma_weight)
-
-                        if not current_image_validation:
-                            input_training_samples.append(image_stack)
-                            input_training_labels.append(label_stack)
-                        else:
-                            input_validation_samples.append(image_stack)
-                            input_validation_labels.append(label_stack)
+                            if not current_image_validation:
+                                input_training_samples.append(image_stack)
+                                input_training_labels.append(label_stack)
+                            elif small_rotate_ops == 0: # Do not add the free rotated stomata to validation data
+                                input_validation_samples.append(image_stack)
+                                input_validation_labels.append(label_stack)
 
     if foreign_neg_dir:
         for image_name in os.listdir(foreign_neg_dir):

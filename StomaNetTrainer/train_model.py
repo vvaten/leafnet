@@ -35,11 +35,14 @@ arg_parser_train.add_argument("--loss_function", dest="loss_function", type=str,
 arg_parser_train.add_argument("--batch_size", dest="batch_size", type=int, default=40, help="Batch size of training.(default value: 40)")
 arg_parser_train.add_argument("--validation_split", dest="validation_split", type=float, default=0.2, help="Images will be split into training and validation with this ratio BEFORE sample duplication.(default value: 0.2)")
 arg_parser_train.add_argument("--dynamic_batch_size", dest="dynamic_batch_size", action="store_true", help="Seperate epochs to 5 training period with increasing batch sizes.")
+arg_parser_train.add_argument("--shuffle_training", dest="shuffle_training", action="store_true", help="Shuffle training data")
+
 arg_parser_train.add_argument("--duplicate_undenoise", dest="duplicate_undenoise", action="store_true", help="Duplicate samples(*2) by using denoised and raw images together.")
 arg_parser_train.add_argument("--duplicate_invert", dest="duplicate_invert", action="store_true", help="Duplicate samples(*2) by using inverting images.")
 arg_parser_train.add_argument("--duplicate_mirror", dest="duplicate_mirror", action="store_true", help="Duplicate samples(*2) by using mirrored images.")
 arg_parser_train.add_argument("--duplicate_rotate", dest="duplicate_rotate", action="store_true", help="Duplicate samples(*4) by rotating samples 90, 180, 270 degree.")
 arg_parser_train.add_argument("--duplicate_rotate_stomata_only", dest="duplicate_rotate_stomata_only", type=int, default=0, help="Duplicate stomata samples by rotating them in n degrees steps")
+arg_parser_train.add_argument("--duplicate_rescale_stomata_only", dest="duplicate_rescale_stomata_only", type=str, default="", help="Duplicate stomata samples by rescaling them in +-n percent, with p percent steps, for example '10,5' creates -10%, -5%, +5%, +10% extra samples. '' for none")
 
 arg_parser_train.add_argument("--predict_preview", dest="predict_preview", type=int, default=0, help="Record training progress by predicting with n images after each epoch")
 
@@ -80,6 +83,11 @@ from tensorflow.keras.utils import multi_gpu_model
 
 from ville_debug_utils import *
 
+def shuffle_along_first_axis(samples, labels):
+    assert samples.shape[0] == labels.shape[0]
+    idx = np.random.rand(samples.shape[0]).argsort(axis=0)
+    return np.take(samples, idx, axis=0), np.take(labels, idx, axis=0)
+
 ## Parse Args
 args = arg_parser.parse_args()
 train_mode, eval_mode = args.set_train_or_eval_mode()
@@ -103,6 +111,7 @@ if train_mode:
     total_epoch = args.epoch
     final_batch_size = args.batch_size
     dynamic_batch_size = args.dynamic_batch_size
+    shuffle_training = args.shuffle_training
     foreign_neg_dir = args.foreign_neg_dir
     stoma_net_model_path = args.stoma_net_model_path
     multi_gpu = max(1, args.multi_gpu)
@@ -133,13 +142,18 @@ if train_mode:
     args_duplicate_mirror=args.duplicate_mirror
     args_duplicate_rotate=args.duplicate_rotate
     args_duplicate_rotate_stomata_only = args.duplicate_rotate_stomata_only
-    
+    args_duplicate_rescale_stomata_only = args.duplicate_rescale_stomata_only
+
     duplicate_times = 1
     if args_duplicate_undenoise: duplicate_times *= 2
     if args_duplicate_invert: duplicate_times *= 2
     if args_duplicate_mirror: duplicate_times *= 2
     if args_duplicate_rotate: duplicate_times *= 4
     if args_duplicate_rotate_stomata_only > 0: duplicate_times *= (90 // args_duplicate_rotate_stomata_only)
+    if len(args_duplicate_rescale_stomata_only) > 0:
+        rescale_max = int(args_duplicate_rescale_stomata_only.split(',')[0])
+        rescale_step = int(args_duplicate_rescale_stomata_only.split(',')[1])
+        duplicate_times *= (2*rescale_max/rescale_step+1)
 
     stoma_weight = args.stoma_weight
     if stoma_weight < 1:
@@ -192,7 +206,7 @@ if train_mode:
     print("Compiling model...", end="")
     sys.stdout.flush()
     training_model = build_stoma_net_model(small_model=True, sigmoid_before_output=True)
-    print(f"training_model shapes input.shape: {training_model.input.shape}, output.shape: {training_model.input.shape}")
+    print(f"training_model shapes input.shape: {training_model.input.shape}, output.shape: {training_model.output.shape}")
     source_size = int(training_model.input.shape[1])
     target_size = int(training_model.output.shape[1])
     print("Done!")
@@ -225,13 +239,13 @@ if train_mode:
 
     print("Loading samples...", end="")
     sys.stdout.flush()
-    input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, args_duplicate_rotate_stomata_only, target_res/sample_res, stoma_weight, args.gaussian_blur)
+    input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, args_duplicate_rotate_stomata_only, args_duplicate_rescale_stomata_only, target_res/sample_res, stoma_weight, args.gaussian_blur)
     print("Done!")
 
     print("Collected "+str(img_count_sum)+" sample images("+str(img_count_sum-validation_count_sum)+" for training, "+str(validation_count_sum)+" for validation) and "+str(foreign_count_sum)+" foreign negative images.")
     print("Input images are duplicated by *" + str(duplicate_times))
 
-    save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_stanford-dic_input_data_sample")
+    ###save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_stanford-dic_input_data_sample")
 
     training_sample_array = np.concatenate(input_training_samples, axis=0)
     del input_training_samples
@@ -250,32 +264,25 @@ if train_mode:
     val_data = (validation_sample_array, validation_label_array)
 
     histories = []
-
+    
+    batch_sizes = np.zeros(total_epoch, dtype=int)
+    
     if dynamic_batch_size:
-        # Get Epochs
-        epoch_per_step = np.zeros(5, dtype=int)
-        epoch_per_step[:] = total_epoch//5
-        if total_epoch%5 != 0:
-            epoch_per_step[-(total_epoch%5):] += 1
-        # Get batch_sizes
-        batch_sizes = list()
-        batch_size_increment = float(final_batch_size) / 5
-        batch_sizes.append(math.ceil(batch_size_increment*1))
-        batch_sizes.append(math.ceil(batch_size_increment*2))
-        batch_sizes.append(math.ceil(batch_size_increment*3))
-        batch_sizes.append(math.ceil(batch_size_increment*4))
-        batch_sizes.append(math.ceil(batch_size_increment*5))
-        
-        
-        # Train
-        print(f"Dynamic batch size: epoch_per_step={epoch_per_step}, batch_sizes={batch_sizes}")
-        for i in range(5):
-            print(f"Dynamic batch size: {i}/5, epochs={epoch_per_step[i]}, batch_sizes={batch_sizes[i]}")
-            history = exec_model.fit(training_sample_array, training_label_array, epochs = epoch_per_step[i], validation_data = val_data, batch_size=batch_sizes[i], callbacks=callbacks)
-            histories.append(history)
+        for i in range(total_epoch):
+            batch_sizes[i] = final_batch_size - (final_batch_size/(total_epoch/2.0))*(i//2)
+        print(f"Dynamic batch sizes: batch_sizes={batch_sizes[i]}")
     else:
         print(f"Static batch size: {final_batch_size}")
-        history = exec_model.fit(training_sample_array, training_label_array, epochs = total_epoch, validation_data = val_data, batch_size=final_batch_size, callbacks=callbacks)
+        batch_sizes[:] = final_batch_size
+        
+    for i in range(total_epoch):
+        if shuffle_training:
+            print("Shuffling training data...", end="")
+            sys.stdout.flush()
+            training_sample_array, training_label_array = shuffle_along_first_axis(training_sample_array, training_label_array)
+            print("Done!")
+        print(f"Epoch {i+1}/{total_epoch}")
+        history = exec_model.fit(training_sample_array, training_label_array, epochs = 1, validation_data = val_data, batch_size=batch_sizes[i], callbacks=callbacks)
         histories.append(history)
         
     print(f"Training complete. Saving model to {save_path}")
@@ -344,7 +351,7 @@ if eval_mode:
 
     print("Loading evaluation samples...", end="")
     sys.stdout.flush()
-    input_training_samples, input_training_labels, _, _, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(eval_image_dir, eval_label_dir, source_size, target_size, 0, image_denoiser, None, False, False, False, False, False, target_res/sample_res, stoma_weight, args.gaussian_blur)
+    input_training_samples, input_training_labels, _, _, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(eval_image_dir, eval_label_dir, source_size, target_size, 0, image_denoiser, None, False, False, False, False, False, "", target_res/sample_res, stoma_weight, args.gaussian_blur)
     print("Done!")
 
     evaluation_sample_array = np.concatenate(input_training_samples, axis=0)

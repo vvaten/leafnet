@@ -5,9 +5,11 @@ import os
 import sys
 from PIL import Image
 from PIL.ImageFilter import GaussianBlur
-from scipy.ndimage import rotate
+from scipy import ndimage
 
 sample_loader_debug = False
+
+eps = 1e-7
 
 def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff, stoma_weight, stomata_only):
     if sample_loader_debug: print(f"sample_loader(source_size={source_size}, target_size={target_size}, border_cutoff={border_cutoff}, stoma_weight={stoma_weight}")
@@ -69,6 +71,10 @@ def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff
     # Sample_array, Sample_weight
     sample_array = np.zeros((r_max_step*c_max_step, source_size, source_size, 1),dtype=float)
     label_array = np.zeros((r_max_step*c_max_step, target_size, target_size, 2),dtype=float)
+    
+    ### Try with single output only. No negative label image.
+    ###label_array = np.zeros((r_max_step*c_max_step, target_size, target_size, 1),dtype=float)
+
     multiply_area_list = list()
 
     for r in range (r_max_step):
@@ -76,10 +82,20 @@ def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff
             block_id = (r * c_max_step) + c
             start_r = r * target_size
             start_c = c * target_size
-            sample_array[block_id] = sample_img_norm[start_r:start_r+source_size,start_c:start_c+source_size,np.newaxis]
-            label_array[block_id,:,:,0] = label_img_norm[start_r:start_r+target_size,start_c:start_c+target_size]
-            if np.mean(label_array[block_id,:,:,0]) > 0.1:
+            ### TODO: Optimize this for stomata_only mode - no need to save sample_array then.
+            labels_tmp = label_img_norm[start_r:start_r+target_size,start_c:start_c+target_size]
+            save_block = not stomata_only # do not save the block by default if stomata_only mode is on.
+            if np.mean(labels_tmp) > 0.1:
                 multiply_area_list.append(block_id)
+                if stomata_only: save_block = True
+
+            if save_block:
+                label_array[block_id,:,:,0] = labels_tmp
+                sample_array[block_id] = sample_img_norm[start_r:start_r+source_size,start_c:start_c+source_size,np.newaxis]
+                                
+    ### Try with single output only. No negative label image.
+    ### remove the following line
+    
     label_array[:,:,:,1] = 1-label_array[:,:,:,0]
 
     if stomata_only:
@@ -91,9 +107,10 @@ def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff
             area_ids.extend(multiply_area_list)
 
     if sample_loader_debug: print(f"loaded {len(area_ids)} samples")
+    
     return sample_array[area_ids], label_array[area_ids]
 
-def load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir=None, args_duplicate_undenoise=False, args_duplicate_invert=False, args_duplicate_mirror=False, args_duplicate_rotate=False, args_duplicate_rotate_stomata_only=0, resize_ratio = 1.0, stoma_weight = 1, gaussian_blur = 4):
+def load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir=None, args_duplicate_undenoise=False, args_duplicate_invert=False, args_duplicate_mirror=False, args_duplicate_rotate=False, args_duplicate_rotate_stomata_only=0, args_duplicate_rescale_stomata_only="", resize_ratio = 1.0, stoma_weight = 1, gaussian_blur = 4):
 
     if args_duplicate_undenoise:
         duplicate_undenoise = [True, False]
@@ -119,6 +136,16 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
         duplicate_rotate_stomata_only = range(0, 90, args_duplicate_rotate_stomata_only)
     else:
         duplicate_rotate_stomata_only = [0]
+        
+    if len(args_duplicate_rescale_stomata_only) > 0 and ',' in args_duplicate_rescale_stomata_only:
+        rescale_max = int(args_duplicate_rescale_stomata_only.split(',')[0])
+        rescale_step = int(args_duplicate_rescale_stomata_only.split(',')[1])
+        
+        duplicate_rescale_stomata_only = np.arange(1.0-float(rescale_max)*0.01, 1.0+float(rescale_max)*0.01, float(rescale_step)*0.01)
+    else:
+        duplicate_rescale_stomata_only = [1.0]
+
+        
 
     # Load images
     img_count_sum = 0
@@ -161,15 +188,19 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
             input_label = np.array(label_PIL_image)[:,:,2]
 
         img_count_sum += 1
+        image_stack_count_sum = 0
+        
         current_image_validation = False
         if img_count_sum * validation_split > validation_count_sum:
             validation_count_sum += 1
             current_image_validation = True
             if len(all_image_names) < 10:
-                print(f"Using {image_name} for validation")
+                print(f"Using {image_name} for validation", end="")
+                sys.stdout.flush()
         else:
             if len(all_image_names) < 10:
-                print(f"Using {image_name} for training")
+                print(f"Using {image_name} for training", end="")
+                sys.stdout.flush()
 
         for undenoise_ops in duplicate_undenoise:
             if not undenoise_ops:
@@ -185,20 +216,44 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
                     for rotate_ops in duplicate_rotate:
                         rot90_rotated_input_image = np.rot90(input_image,rotate_ops)
                         rot90_rotated_input_label = np.rot90(input_label,rotate_ops)
+                        
                         for small_rotate_ops in duplicate_rotate_stomata_only:
-                            if small_rotate_ops == 0:
-                                image_stack, label_stack = sample_loader(source_size, target_size, rot90_rotated_input_image, rot90_rotated_input_label, 50, stoma_weight, False)
-                            else:
-                                free_rotated_input_image = rotate(rot90_rotated_input_image, small_rotate_ops)
-                                free_rotated_input_label = rotate(rot90_rotated_input_label, small_rotate_ops)
-                                image_stack, label_stack = sample_loader(source_size, target_size, free_rotated_input_image, free_rotated_input_label, 50, stoma_weight, True)
+                            for rescale_ops in duplicate_rescale_stomata_only:
+                                if current_image_validation:
+                                    if small_rotate_ops != 0 or abs(rescale_ops - 1.0) > eps:
+                                        continue
+                                        
+                                if small_rotate_ops == 0:
+                                    if abs(rescale_ops - 1.0) < eps:
+                                        image_stack, label_stack = sample_loader(source_size, target_size, rot90_rotated_input_image, rot90_rotated_input_label, 50, stoma_weight, False)
+                                    else:
+                                        image_stack, label_stack = sample_loader(source_size, target_size,
+                                                                        ndimage.zoom(rot90_rotated_input_image, rescale_ops),
+                                                                        ndimage.zoom(rot90_rotated_input_label, rescale_ops), 50, stoma_weight, True)
 
-                            if not current_image_validation:
-                                input_training_samples.append(image_stack)
-                                input_training_labels.append(label_stack)
-                            elif small_rotate_ops == 0: # Do not add the free rotated stomata to validation data
-                                input_validation_samples.append(image_stack)
-                                input_validation_labels.append(label_stack)
+                                else:
+                                    free_rotated_input_image = ndimage.rotate(rot90_rotated_input_image, small_rotate_ops)
+                                    free_rotated_input_label = ndimage.rotate(rot90_rotated_input_label, small_rotate_ops)
+                                    if abs(rescale_ops - 1.0) > eps:
+                                        free_rotated_input_image = ndimage.zoom(free_rotated_input_image, rescale_ops)
+                                        free_rotated_input_label = ndimage.zoom(free_rotated_input_label, rescale_ops)
+                                        
+                                    image_stack, label_stack = sample_loader(source_size, target_size, free_rotated_input_image, free_rotated_input_label, 50, stoma_weight, True)
+
+                                if not current_image_validation:
+                                    input_training_samples.append(image_stack)
+                                    input_training_labels.append(label_stack)
+                                    image_stack_count_sum += len(image_stack)
+                                else:
+                                    input_validation_samples.append(image_stack)
+                                    input_validation_labels.append(label_stack)
+                                    image_stack_count_sum += len(image_stack)
+                                    
+                                print(".", end="")
+                                sys.stdout.flush()
+                                    
+        if len(all_image_names) < 10:
+            print(f" loaded {image_stack_count_sum} samples")
 
     if foreign_neg_dir:
         for image_name in os.listdir(foreign_neg_dir):
@@ -233,4 +288,5 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
                             image_stack, label_stack = sample_loader(source_size, target_size, input_image, input_label, 50, stoma_weight)
                             input_training_samples.append(image_stack)
                             input_training_labels.append(label_stack)
+
     return input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum

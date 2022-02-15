@@ -220,7 +220,7 @@ if train_mode:
     callbacks = []
 
     if predict_preview:
-        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, predict_preview, "training_preview", source_size, target_size, image_denoiser, target_res/sample_res)
+        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, predict_preview, save_path[:-6]+"_training_preview", source_size, target_size, image_denoiser, target_res/sample_res)
         callbacks.append(training_preview_predictor_callback)
 
     print("Loading samples...", end="")
@@ -358,7 +358,7 @@ if eval_mode:
     results = exec_model.evaluate(evaluation_sample_array, evaluation_label_array, batch_size=final_batch_size)
 
     if predict_preview:
-        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, predict_preview, "eval_predict", source_size, target_size, image_denoiser, target_res/sample_res)
+        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, predict_preview, save_path[:-6]+"_eval_predict", source_size, target_size, image_denoiser, target_res/sample_res)
         training_preview_predictor_callback.on_epoch_end(0)
 
     results_dict = dict(zip(['test_loss','test_acc','test_dice_coeff'],results))

@@ -6,6 +6,8 @@ import numpy as np
 import cv2
 
 import sys
+from pathlib import Path
+
 # insert at 1, 0 is the script path (or '' in REPL)
 sys.path.insert(1, '/home/vvaten/rsync/leafnet/leafnet/leafnet_libs')
 sys.path.insert(1, '/home/vvaten/rsync/leafnet/leafnet/leafnet_libs/stoma_detector')
@@ -49,9 +51,9 @@ def dice_coeff(y_true, y_pred, smooth=1):
 
 
 class PredictAfterEachTrainingEpoch(tf.compat.v1.keras.callbacks.Callback):
-    def __init__(self, predict_model, predict_image_name, model_input_shape, model_output_shape, image_denoiser, resize_ratio):
+    def __init__(self, predict_model, predict_folder, predict_n_images, target_folder, model_input_shape, model_output_shape, image_denoiser, resize_ratio):
         self.predict_model = predict_model
-        self.predict_preview_path = "training_preview"
+        self.predict_preview_path = target_folder
         if not os.path.exists(self.predict_preview_path):
             os.makedirs(self.predict_preview_path)
         self.background_type = True
@@ -59,17 +61,26 @@ class PredictAfterEachTrainingEpoch(tf.compat.v1.keras.callbacks.Callback):
             preprocessor = image_denoiser.denoise
         else:
             preprocessor = None
-        self.predict_image, _ = load_image(predict_image_name, resize_ratio, self.background_type, preprocesser = preprocessor)
-        print(f"Predicting a preview after each epch with image {predict_image_name}")
-        filename = f"{self.predict_preview_path}/predict_epoch__source.png"
-        Image.fromarray(self.predict_image).convert('RGB').save(filename)
+
+        self.predict_images = list()
+
+        self.image_file_names = os.listdir(predict_folder)[:predict_n_images]
+        print(f"Predicting a preview after each epch with image(s) {self.image_file_names}")
+
+        for file_name in self.image_file_names:
+            tmp_image, _ = load_image(os.path.join(predict_folder, file_name), resize_ratio, self.background_type, preprocesser = preprocessor)
+            filename = os.path.join(self.predict_preview_path, Path(file_name).stem + "__original.png")
+            Image.fromarray(tmp_image).convert('RGB').save(filename)
+            self.predict_images.append(tmp_image)
+
         self.model_input_shape = model_input_shape
         self.model_output_shape = model_output_shape
 
     def on_epoch_end(self, epoch, logs=None):
-        result_array = generate_heatmap(self.predict_image, self.predict_model, self.model_input_shape, self.model_output_shape)
-        filename = f"{self.predict_preview_path}/predict_epoch_{epoch:02d}.png"
-        Image.fromarray(np.uint8(result_array*255)).convert('RGB').save(filename)
+        for i, file_name in enumerate(self.image_file_names):
+            result_array = generate_heatmap(self.predict_images[i], self.predict_model, self.model_input_shape, self.model_output_shape)
+            filename = os.path.join(self.predict_preview_path, Path(file_name).stem + f"_epoch_{epoch:02d}.png")
+            Image.fromarray(np.uint8(result_array*255)).convert('RGB').save(filename)
 
 
 

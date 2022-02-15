@@ -41,7 +41,7 @@ arg_parser_train.add_argument("--duplicate_mirror", dest="duplicate_mirror", act
 arg_parser_train.add_argument("--duplicate_rotate", dest="duplicate_rotate", action="store_true", help="Duplicate samples(*4) by rotating samples 90, 180, 270 degree.")
 arg_parser_train.add_argument("--duplicate_rotate_stomata_only", dest="duplicate_rotate_stomata_only", type=int, default=0, help="Duplicate stomata samples by rotating them in n degrees steps")
 
-arg_parser_train.add_argument("--predict_preview", dest="predict_preview", action="store_true", help="Record training progress by predicting with validation data after each epoch")
+arg_parser_train.add_argument("--predict_preview", dest="predict_preview", type=int, default=0, help="Record training progress by predicting with n images after each epoch")
 
 arg_parser_train.add_argument("--stoma_weight", dest="stoma_weight", type=int, default=1, help="Image areas containing stomata will be mulitplied by this factor.(default value: 1)")
 arg_parser_train.add_argument("--gaussian_blur", dest="gaussian_blur", type=int, default=4, help="Factor for Gaussian blur. (default: 4)")
@@ -58,7 +58,7 @@ arg_parser_eval.add_argument("--batch_size", dest="batch_size", type=int, defaul
 arg_parser_eval.add_argument("--gpu_count", dest="multi_gpu", type=int, default=1, help="Tensorflow multi_gpu_model argument, use 1 for cpu or one gpu.(default value: 1)")
 arg_parser_eval.add_argument("--stoma_weight", dest="stoma_weight", type=int, default=1, help="Image areas containing stomata will be mulitplied by this factor.(default value: 1)")
 arg_parser_eval.add_argument("--gaussian_blur", dest="gaussian_blur", type=int, default=4, help="Factor for Gaussian blur. (default: 4)")
-arg_parser_eval.add_argument("--predict_preview", dest="predict_preview", action="store_true", help="Record raw prediction with the model with the first evaluation image")
+arg_parser_eval.add_argument("--predict_preview", dest="predict_preview", type=int, default=0, help="Predict evaluatio n images")
 arg_parser_eval.set_defaults(set_train_or_eval_mode=set_eval_mode)
 
 
@@ -192,6 +192,7 @@ if train_mode:
     print("Compiling model...", end="")
     sys.stdout.flush()
     training_model = build_stoma_net_model(small_model=True, sigmoid_before_output=True)
+    print(f"training_model shapes input.shape: {training_model.input.shape}, output.shape: {training_model.input.shape}")
     source_size = int(training_model.input.shape[1])
     target_size = int(training_model.output.shape[1])
     print("Done!")
@@ -219,7 +220,7 @@ if train_mode:
     callbacks = []
 
     if predict_preview:
-        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, os.path.join(eval_image_dir, os.listdir(eval_image_dir)[0]), source_size, target_size, image_denoiser, target_res/sample_res)
+        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, predict_preview, "training_preview", source_size, target_size, image_denoiser, target_res/sample_res)
         callbacks.append(training_preview_predictor_callback)
 
     print("Loading samples...", end="")
@@ -357,8 +358,8 @@ if eval_mode:
     results = exec_model.evaluate(evaluation_sample_array, evaluation_label_array, batch_size=final_batch_size)
 
     if predict_preview:
-        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, os.path.join(eval_image_dir, os.listdir(eval_image_dir)[0]), source_size, target_size, image_denoiser, target_res/sample_res)
-        training_preview_predictor_callback.on_epoch_end(-1)
+        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, predict_preview, "eval_predict", source_size, target_size, image_denoiser, target_res/sample_res)
+        training_preview_predictor_callback.on_epoch_end(0)
 
     results_dict = dict(zip(['test_loss','test_acc','test_dice_coeff'],results))
     print(f"Results: {results_dict}")

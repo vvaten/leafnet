@@ -74,6 +74,7 @@ import random
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras import optimizers, backend
+from tensorflow.keras.callbacks import ReduceLROnPlateau, ModelCheckpoint
 
 from gegl_denoise.denoiser import denoiser
 from sample_loader import load_sample_from_folder
@@ -229,13 +230,26 @@ if train_mode:
     else:
         exec_model = training_model
 
-    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff])
+    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff, dice_coeff2])
 
     callbacks = []
 
     if predict_preview:
-        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, predict_preview, save_path[:-6]+"_training_preview", source_size, target_size, image_denoiser, target_res/sample_res)
+        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, eval_label_dir, predict_preview, save_path[:-6]+"_training_preview", source_size, target_size, image_denoiser, target_res/sample_res)
         callbacks.append(training_preview_predictor_callback)
+
+    reduce_lr = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, mode="min", min_lr=0.0001, cooldown=2, verbose=1)
+    callbacks.append(reduce_lr)
+
+    model_checkpoint_filepath = save_path[:-6]+'.checkpoint'
+    model_checkpoint_callback = ModelCheckpoint(
+        filepath=model_checkpoint_filepath,
+        save_weights_only=True,
+        monitor='val_dice_coeff2',
+        mode='max',
+        save_best_only=True,
+        verbose=1)
+    callbacks.append(model_checkpoint_callback)
 
     print("Loading samples...", end="")
     sys.stdout.flush()
@@ -265,16 +279,19 @@ if train_mode:
 
     histories = []
     
-    batch_sizes = np.zeros(total_epoch, dtype=int)
-    
+    batch_sizes = np.ones(total_epoch, dtype=int)*final_batch_size
+
     if dynamic_batch_size:
         for i in range(total_epoch):
-            batch_sizes[i] = final_batch_size - (final_batch_size/(total_epoch/2.0))*(i//2)
-        print(f"Dynamic batch sizes: batch_sizes={batch_sizes[i]}")
+            batch_sizes[i] = (final_batch_size/(total_epoch/2.0))*(1+i//2)
+        print(f"Dynamic batch sizes: batch_sizes={batch_sizes}")
     else:
         print(f"Static batch size: {final_batch_size}")
-        batch_sizes[:] = final_batch_size
-        
+
+    best_model_monitor_value = -np.Inf
+    best_model_monitor_epochs_ago = -1
+    best_model_monitor = "val_dice_coeff2"
+
     for i in range(total_epoch):
         if shuffle_training:
             print("Shuffling training data...", end="")
@@ -283,12 +300,21 @@ if train_mode:
             print("Done!")
         print(f"Epoch {i+1}/{total_epoch}")
         history = exec_model.fit(training_sample_array, training_label_array, epochs = 1, validation_data = val_data, batch_size=batch_sizes[i], callbacks=callbacks)
+        if history.history[best_model_monitor][-1] > best_model_monitor_value:
+            best_model_monitor_value = history.history[best_model_monitor][-1]
+            best_model_monitor_epochs_ago = 0
+        else:
+            best_model_monitor_epochs_ago += 1
+        if best_model_monitor_epochs_ago > 10:
+            print(f"Stopping training as {best_model_monitor_epochs_ago} > 10")
+            break
         histories.append(history)
         
     print(f"Training complete. Saving model to {save_path}")
 
     saving_model = build_stoma_net_model(small_model=False, sigmoid_before_output=False)
-    saving_model.set_weights(training_model.get_weights())
+    #saving_model.set_weights(training_model.get_weights())
+    saving_model.load_weights(model_checkpoint_filepath)
     saving_model.save(save_path)
     print("Model saved!")
     with open(save_path[:-6]+".res", "w") as model_meta: model_meta.write(str(target_res))
@@ -347,7 +373,7 @@ if eval_mode:
     else:
         exec_model = evaluation_model
 
-    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff])
+    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff, dice_coeff2])
 
     print("Loading evaluation samples...", end="")
     sys.stdout.flush()
@@ -365,10 +391,10 @@ if eval_mode:
     results = exec_model.evaluate(evaluation_sample_array, evaluation_label_array, batch_size=final_batch_size)
 
     if predict_preview:
-        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, predict_preview, save_path[:-6]+"_eval_predict", source_size, target_size, image_denoiser, target_res/sample_res)
+        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, image_dir, label_dir, predict_preview, save_path[:-6]+"_eval_predict", source_size, target_size, image_denoiser, target_res/sample_res)
         training_preview_predictor_callback.on_epoch_end(0)
 
-    results_dict = dict(zip(['test_loss','test_acc','test_dice_coeff'],results))
+    results_dict = dict(zip(['test_loss','test_acc','test_dice_coeff', 'test_dice_coeff2'], results))
     print(f"Results: {results_dict}")
     with open(save_path[:-6]+".results.json", "w") as results_file: results_file.write(str(results_dict))
     print(f"Wrote {save_path[:-6]}.results.json")

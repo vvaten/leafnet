@@ -88,6 +88,10 @@ def build_stoma_net_model(small_model=False, sigmoid_before_output=False):
         layer_tc = layers.Activation("sigmoid")(layer_tc)
 
     model_output = layers.Conv2D(2,1, activation='softmax')(layer_tc)
+
+    ### for model with single output only, no negative labels needed for this.
+    #model_output = layers.Conv2D(1,1, activation='softmax')(layer_tc)
+
     # Softmax Output
     return Model(inputs = model_input, outputs = model_output)
 

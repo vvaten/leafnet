@@ -72,8 +72,8 @@ def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff
     sample_array = np.zeros((r_max_step*c_max_step, source_size, source_size, 1),dtype=float)
     label_array = np.zeros((r_max_step*c_max_step, target_size, target_size, 2),dtype=float)
     
-    ### Try with single output only. No negative label image.
-    ###label_array = np.zeros((r_max_step*c_max_step, target_size, target_size, 1),dtype=float)
+    ### TODO: Try with single output only. No negative label image.
+    ### label_array = np.zeros((r_max_step*c_max_step, target_size, target_size, 1),dtype=float)
 
     multiply_area_list = list()
 
@@ -194,11 +194,11 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
         if img_count_sum * validation_split > validation_count_sum:
             validation_count_sum += 1
             current_image_validation = True
-            if len(all_image_names) < 10:
+            if len(all_image_names) < 20:
                 print(f"Using {image_name} for validation", end="")
                 sys.stdout.flush()
         else:
-            if len(all_image_names) < 10:
+            if len(all_image_names) < 20:
                 print(f"Using {image_name} for training", end="")
                 sys.stdout.flush()
 
@@ -252,7 +252,7 @@ def load_sample_from_folder(image_dir, label_dir, source_size, target_size, vali
                                 print(".", end="")
                                 sys.stdout.flush()
                                     
-        if len(all_image_names) < 10:
+        if len(all_image_names) < 20:
             print(f" loaded {image_stack_count_sum} samples")
 
     if foreign_neg_dir:

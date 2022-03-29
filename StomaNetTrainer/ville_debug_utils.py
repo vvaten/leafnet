@@ -9,8 +9,13 @@ import sys
 from pathlib import Path
 
 # insert at 1, 0 is the script path (or '' in REPL)
-sys.path.insert(1, '/home/vvaten/rsync/leafnet/leafnet/leafnet_libs')
-sys.path.insert(1, '/home/vvaten/rsync/leafnet/leafnet/leafnet_libs/stoma_detector')
+sys.path.insert(1, '/workspace/rsync/leafnet/leafnet/leafnet_libs')
+sys.path.insert(1, '/workspace/rsync/leafnet/leafnet/leafnet_libs/stoma_detector')
+
+# insert at 1, 0 is the script path (or '' in REPL)
+sys.path.insert(1, '/Users/vvaten/Projects/LeafNet/leafnet/leafnet/leafnet_libs')
+sys.path.insert(1, '/Users/vvaten/Projects/LeafNet/leafnet/leafnet/leafnet_libs/stoma_detector')
+
 
 print(f"PATH={sys.path}")
 
@@ -45,13 +50,7 @@ def save_preprocessed_image_samples(input_training_samples, input_training_label
         print(f"Wrote images index {i}")
 
 def dice_coeff(y_true, y_pred, smooth=1):
-    intersection = backend.sum(y_true * y_pred, axis=[1,2,3])
-    union = backend.sum(y_true, axis=[1,2,3]) + backend.sum(y_pred, axis=[1,2,3])
-    dice = backend.mean((2. * intersection + smooth)/(union + smooth), axis=0)
-    return dice
-
-# This Dice Coefficient only takes the positive label images into account, ignores the inversed negative label image
-def dice_coeff2(y_true, y_pred, smooth=1):
+    # This Dice Coefficient only takes the positive label images into account, ignores the inversed negative label image
     y_true = y_true[:,:,:,:1]
     y_pred = y_pred[:,:,:,:1]
     intersection = backend.sum(y_true * y_pred, axis=[1,2,3])

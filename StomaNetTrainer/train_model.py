@@ -29,6 +29,7 @@ arg_parser_train.add_argument("-e", dest="epoch", type=int, default=10, help="Th
 arg_parser_train.add_argument("-f", dest="foreign_neg_dir", type=str, help="(optional)The folder containing foreign negative images (images without stomata), foreign negative images will NOT be resized according to resolution.")
 arg_parser_train.add_argument("-m", dest="stoma_net_model_path", type=str, help="The source model for transfer training or eval (must be another model based on StomaNet).")
 
+# disabled while TF2 porting in progress
 arg_parser_train.add_argument("--gpu_count", dest="multi_gpu", type=int, default=1, help="Tensorflow multi_gpu_model argument, use 1 for cpu or one gpu.(default value: 1)")
 arg_parser_train.add_argument("--optimizer", dest="optimizer", type=str, default="SGD", help="Optimizer: SGD (with Nesterov momentum) or Nadam")
 arg_parser_train.add_argument("--loss_function", dest="loss_function", type=str, default="kld", help="Loss function: kld or binary_crossentropy")
@@ -72,22 +73,41 @@ import sys
 import random
 
 import tensorflow as tf
+
+print("Tensorflow version", tf.__version__)
+
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+  try:
+    # Currently, memory growth needs to be the same across GPUs
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+  except RuntimeError as e:
+    # Memory growth must be set before GPUs have been initialized
+    print(e)
+    
+    
 from tensorflow.keras.models import load_model
 from tensorflow.keras import optimizers, backend
-from tensorflow.keras.callbacks import ReduceLROnPlateau, ModelCheckpoint
+from tensorflow.keras.callbacks import ReduceLROnPlateau, ModelCheckpoint, EarlyStopping
 
 from gegl_denoise.denoiser import denoiser
 from sample_loader import load_sample_from_folder
+from sample_loader_tf import load_sample_from_folder_tf
 from stoma_net_models import build_stoma_net_model
-
-from tensorflow.keras.utils import multi_gpu_model
 
 from ville_debug_utils import *
 
 def shuffle_along_first_axis(samples, labels):
     assert samples.shape[0] == labels.shape[0]
-    idx = np.random.rand(samples.shape[0]).argsort(axis=0)
-    return np.take(samples, idx, axis=0), np.take(labels, idx, axis=0)
+    idx = tf.convert_to_tensor(np.random.rand(samples.shape[0]).argsort(axis=0))
+    new_samples = tf.gather(samples, idx, axis=0)
+    del samples
+    new_labels = tf.gather(labels, idx, axis=0)
+    del labels
+    return new_samples, new_labels
 
 ## Parse Args
 args = arg_parser.parse_args()
@@ -200,13 +220,22 @@ training_sample_array = None
 training_label_array = None
 validation_sample_array = None
 validation_label_array = None
+training_dataset = None
+validation_dataset = None
+
+if multi_gpu > 1:
+    strategy = tf.distribute.MirroredStrategy()
+else:  # Use the Default Strategy
+    strategy = tf.distribute.get_strategy()
 
 if train_mode:
     print("Training.")
     # Compile model
     print("Compiling model...", end="")
     sys.stdout.flush()
-    training_model = build_stoma_net_model(small_model=True, sigmoid_before_output=True)
+    
+    with strategy.scope():
+        training_model = build_stoma_net_model(small_model=True, sigmoid_before_output=True)
     print(f"training_model shapes input.shape: {training_model.input.shape}, output.shape: {training_model.output.shape}")
     source_size = int(training_model.input.shape[1])
     target_size = int(training_model.output.shape[1])
@@ -217,20 +246,16 @@ if train_mode:
         print("Loading weights...", end="")
         sys.stdout.flush()
         # Not using load_weights to avoid tensorflow model issue 2676
-        reference_model = load_model(stoma_net_model_path)
-        training_model.set_weights(reference_model.get_weights())
+        with strategy.scope():
+            reference_model = load_model(stoma_net_model_path)
+            training_model.set_weights(reference_model.get_weights())
         print("Done!")
 
     # Load Samples
     image_denoiser = None #denoiser()
 
-    exec_model = None
-    if multi_gpu > 1:
-        exec_model = multi_gpu_model(training_model, gpus=multi_gpu)
-    else:
-        exec_model = training_model
-
-    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff, dice_coeff2])
+    exec_model = training_model
+    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff])
 
     callbacks = []
 
@@ -238,77 +263,100 @@ if train_mode:
         training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, eval_label_dir, predict_preview, save_path[:-6]+"_training_preview", source_size, target_size, image_denoiser, target_res/sample_res)
         callbacks.append(training_preview_predictor_callback)
 
-    reduce_lr = ReduceLROnPlateau(monitor='loss', factor=0.5, patience=5, mode="min", min_lr=0.0001, cooldown=2, verbose=1)
+    reduce_lr = ReduceLROnPlateau(monitor='loss',
+                                  factor=0.75,
+                                  patience=5,
+                                  mode="min",
+                                  min_lr=0.0001,
+                                  cooldown=5,
+                                  verbose=1)
     callbacks.append(reduce_lr)
 
     model_checkpoint_filepath = save_path[:-6]+'.checkpoint'
     model_checkpoint_callback = ModelCheckpoint(
         filepath=model_checkpoint_filepath,
         save_weights_only=True,
-        monitor='val_dice_coeff2',
+        monitor='val_dice_coeff',
         mode='max',
         save_best_only=True,
         verbose=1)
     callbacks.append(model_checkpoint_callback)
-
+    
+    early_stopping = EarlyStopping(
+        monitor="val_dice_coeff",
+        min_delta=0.001,
+        patience=15,
+        verbose=1,
+        mode="max",
+        baseline=None,
+        restore_best_weights=True,
+    )
+    callbacks.append(early_stopping)
+    
     print("Loading samples...", end="")
     sys.stdout.flush()
-    input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, args_duplicate_rotate_stomata_only, args_duplicate_rescale_stomata_only, target_res/sample_res, stoma_weight, args.gaussian_blur)
+    #input_training_samples, input_training_labels, input_validation_samples, input_validation_labels, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, args_duplicate_rotate_stomata_only, args_duplicate_rescale_stomata_only, target_res/sample_res, stoma_weight, gaussian_blur)
+    
+    training_dataset, validation_dataset, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder_tf(image_dir, label_dir, source_size, target_size, validation_split, image_denoiser, foreign_neg_dir, args_duplicate_undenoise, args_duplicate_invert, args_duplicate_mirror, args_duplicate_rotate, args_duplicate_rotate_stomata_only, args_duplicate_rescale_stomata_only, target_res/sample_res, stoma_weight, gaussian_blur)
     print("Done!")
 
     print("Collected "+str(img_count_sum)+" sample images("+str(img_count_sum-validation_count_sum)+" for training, "+str(validation_count_sum)+" for validation) and "+str(foreign_count_sum)+" foreign negative images.")
     print("Input images are duplicated by *" + str(duplicate_times))
 
     ###save_preprocessed_image_samples(input_training_samples, input_training_labels, "tmp_stanford-dic_input_data_sample")
+    print("original len training datase", tf.data.experimental.cardinality(training_dataset).numpy())
 
-    training_sample_array = np.concatenate(input_training_samples, axis=0)
-    del input_training_samples
-    training_label_array = np.concatenate(input_training_labels, axis=0)
-    del input_training_labels
-    validation_sample_array = np.concatenate(input_validation_samples, axis=0)
-    del input_validation_samples
-    validation_label_array = np.concatenate(input_validation_labels, axis=0)
-    del input_validation_labels
+    #training_dataset = training_dataset.unbatch()
+    #print("unbatched len training datase", tf.data.experimental.cardinality(training_dataset).numpy())
+    
+    #training_dataset = training_dataset.shuffle(5000).batch(final_batch_size).cache().repeat()
 
-    print(f"Mem training_sample_array: {np_mem(training_sample_array)}, shape: {training_sample_array.shape}")
-    print(f"Mem training_label_array: {np_mem(training_label_array)}, shape: {training_label_array.shape}")
-    print(f"Mem validation_sample_array: {np_mem(validation_sample_array)}, shape: {validation_sample_array.shape}")
-    print(f"Mem validation_label_array: {np_mem(validation_label_array)}, shape: {validation_label_array.shape}")
+    def configure_for_performance(ds):
+      ds = ds.unbatch()
+      ds = ds.cache()
+      if shuffle_training:
+        ds = ds.shuffle(buffer_size=5000, reshuffle_each_iteration=True)
+      ds = ds.batch(final_batch_size)
+      ds = ds.prefetch(buffer_size=tf.data.AUTOTUNE)
+      return ds
+      
+    training_dataset = configure_for_performance(training_dataset)
+    validation_dataset = configure_for_performance(validation_dataset)
 
-    val_data = (validation_sample_array, validation_label_array)
+    #validation_dataset = validation_dataset.unbatch()
+    #print("unbatched len validation_dataset", len(validation_dataset))
+    #validation_dataset = validation_dataset.shuffle(5000).batch(final_batch_size).cache().repeat()
+
+    #if shuffle_training:
+    #    print("Shuffling training dataset")
+     #   training_dataset = training_dataset.shuffle(100, reshuffle_each_iteration=True)
+
+
+    #training_dataset = training_dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
+    #validation_dataset = validation_dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
+
+    #training_sample_array = tf.convert_to_tensor(np.concatenate(input_training_samples, axis=0))
+    #del input_training_samples
+    #training_label_array = tf.convert_to_tensor(np.concatenate(input_training_labels, axis=0))
+    #del input_training_labels
+    #validation_sample_array = tf.convert_to_tensor(np.concatenate(input_validation_samples, axis=0))
+    #del input_validation_samples
+    #validation_label_array = tf.convert_to_tensor(np.concatenate(input_validation_labels, axis=0))
+    #del input_validation_labels
+
+    #val_data = (validation_sample_array, validation_label_array)
 
     histories = []
     
-    batch_sizes = np.ones(total_epoch, dtype=int)*final_batch_size
+    #batch_sizes = np.ones(total_epoch, dtype=int)*final_batch_size
 
-    if dynamic_batch_size:
-        for i in range(total_epoch):
-            batch_sizes[i] = (final_batch_size/(total_epoch/2.0))*(1+i//2)
-        print(f"Dynamic batch sizes: batch_sizes={batch_sizes}")
-    else:
-        print(f"Static batch size: {final_batch_size}")
-
-    best_model_monitor_value = -np.Inf
-    best_model_monitor_epochs_ago = -1
-    best_model_monitor = "val_dice_coeff2"
-
-    for i in range(total_epoch):
-        if shuffle_training:
-            print("Shuffling training data...", end="")
-            sys.stdout.flush()
-            training_sample_array, training_label_array = shuffle_along_first_axis(training_sample_array, training_label_array)
-            print("Done!")
-        print(f"Epoch {i+1}/{total_epoch}")
-        history = exec_model.fit(training_sample_array, training_label_array, epochs = 1, validation_data = val_data, batch_size=batch_sizes[i], callbacks=callbacks)
-        if history.history[best_model_monitor][-1] > best_model_monitor_value:
-            best_model_monitor_value = history.history[best_model_monitor][-1]
-            best_model_monitor_epochs_ago = 0
-        else:
-            best_model_monitor_epochs_ago += 1
-        if best_model_monitor_epochs_ago > 10:
-            print(f"Stopping training as {best_model_monitor_epochs_ago} > 10")
-            break
-        histories.append(history)
+    history = exec_model.fit(training_dataset,
+                             epochs = total_epoch,
+                             validation_data = validation_dataset,
+                             #steps_per_epoch=100,
+                             #validation_steps=10,
+                             callbacks=callbacks)
+    histories.append(history)
         
     print(f"Training complete. Saving model to {save_path}")
 
@@ -339,11 +387,14 @@ if eval_mode:
     if training_label_array is not None: del training_label_array
     if validation_sample_array is not None: del validation_sample_array
     if validation_label_array is not None: del validation_label_array
+    if training_dataset is not None: del training_dataset
+    if validation_dataset is not None: del validation_dataset
 
     # Compile model
     print("Compiling model...", end="")
     sys.stdout.flush()
-    evaluation_model = build_stoma_net_model(small_model=True, sigmoid_before_output=True)
+    with strategy.scope():
+        evaluation_model = build_stoma_net_model(small_model=True, sigmoid_before_output=True)
     source_size = int(evaluation_model.input.shape[1])
     target_size = int(evaluation_model.output.shape[1])
     print("Done!")
@@ -351,11 +402,13 @@ if eval_mode:
     # Not using load_weights to avoid tensorflow model issue 2676
     if not train_mode:
         print(f"Loading weights from {stoma_net_model_path}")
-        reference_model = load_model(stoma_net_model_path)
-        evaluation_model.set_weights(reference_model.get_weights())
+        with strategy.scope():
+            reference_model = load_model(stoma_net_model_path)
+            evaluation_model.set_weights(reference_model.get_weights())
     else:
         print(f"Loading weights from trained model")
-        evaluation_model.set_weights(training_model.get_weights())
+        with strategy.scope():
+            evaluation_model.set_weights(training_model.get_weights())
 
     if 'target_res' not in globals():
         try:
@@ -365,36 +418,34 @@ if eval_mode:
         except e:
             raise ValueError(f"Target resolution file not found from model file location! ({stoma_net_model_path})")
 
-    image_denoiser = denoiser()
+    image_denoiser = None #denoiser()
 
-    exec_model = None
-    if multi_gpu > 1:
-        exec_model = multi_gpu_model(evaluation_model, gpus=multi_gpu)
-    else:
-        exec_model = evaluation_model
-
-    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff, dice_coeff2])
+    exec_model = evaluation_model
+    exec_model.compile(loss=loss_function, optimizer=optm, metrics=['accuracy', dice_coeff])
 
     print("Loading evaluation samples...", end="")
     sys.stdout.flush()
-    input_training_samples, input_training_labels, _, _, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder(eval_image_dir, eval_label_dir, source_size, target_size, 0, image_denoiser, None, False, False, False, False, False, "", target_res/sample_res, stoma_weight, args.gaussian_blur)
+    eval_dataset, _, img_count_sum, validation_count_sum, foreign_count_sum = load_sample_from_folder_tf(eval_image_dir, eval_label_dir, source_size, target_size, 0, image_denoiser, None, False, False, False, False, False, "", target_res/sample_res, stoma_weight, args.gaussian_blur)
     print("Done!")
 
-    evaluation_sample_array = np.concatenate(input_training_samples, axis=0)
-    del input_training_samples
-    evaluation_label_array = np.concatenate(input_training_labels, axis=0)
-    del input_training_labels
+    eval_dataset = eval_dataset.unbatch().batch(final_batch_size)
+    eval_dataset = eval_dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
+        
+    #evaluation_sample_array = np.concatenate(input_training_samples, axis=0)
+    #del input_training_samples
+    #evaluation_label_array = np.concatenate(input_training_labels, axis=0)
+    #del input_training_labels
 
-    print(f"Mem evaluation_sample_array: {np_mem(evaluation_sample_array)}, shape: {evaluation_sample_array.shape}")
-    print(f"Mem evaluation_label_array: {np_mem(evaluation_label_array)}, shape: {evaluation_label_array.shape}")
+    #print(f"Mem evaluation_sample_array: {np_mem(evaluation_sample_array)}, shape: {evaluation_sample_array.shape}")
+    #print(f"Mem evaluation_label_array: {np_mem(evaluation_label_array)}, shape: {evaluation_label_array.shape}")
 
-    results = exec_model.evaluate(evaluation_sample_array, evaluation_label_array, batch_size=final_batch_size)
+    results = exec_model.evaluate(eval_dataset)#, batch_size=final_batch_size)
 
     if predict_preview:
-        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, image_dir, label_dir, predict_preview, save_path[:-6]+"_eval_predict", source_size, target_size, image_denoiser, target_res/sample_res)
+        training_preview_predictor_callback = PredictAfterEachTrainingEpoch(exec_model, eval_image_dir, eval_label_dir, predict_preview, save_path[:-6]+"_training_preview", source_size, target_size, image_denoiser, target_res/sample_res)
         training_preview_predictor_callback.on_epoch_end(0)
 
-    results_dict = dict(zip(['test_loss','test_acc','test_dice_coeff', 'test_dice_coeff2'], results))
+    results_dict = dict(zip(['test_loss','test_acc','test_dice_coeff'], results))
     print(f"Results: {results_dict}")
     with open(save_path[:-6]+".results.json", "w") as results_file: results_file.write(str(results_dict))
     print(f"Wrote {save_path[:-6]}.results.json")

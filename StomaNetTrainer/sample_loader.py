@@ -82,7 +82,6 @@ def sample_loader(source_size, target_size, sample_img, label_img, border_cutoff
             block_id = (r * c_max_step) + c
             start_r = r * target_size
             start_c = c * target_size
-            ### TODO: Optimize this for stomata_only mode - no need to save sample_array then.
             labels_tmp = label_img_norm[start_r:start_r+target_size,start_c:start_c+target_size]
             save_block = not stomata_only # do not save the block by default if stomata_only mode is on.
             if np.mean(labels_tmp) > 0.1:
